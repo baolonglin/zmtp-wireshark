@@ -89,6 +89,7 @@ fds.cmd_pong_context = ProtoField.new("Context", "zmtp.command.pong.context", ft
 
 local tcp_stream_id = Field.new("tcp.stream")
 local subdissectors = DissectorTable.new("zmtp.protocol", "ZMTP", ftypes.STRING)
+local dissect_internal = false
 
 -- un-register zmq to handle tcp port range
 local function unregister_tcp_port_range(start_port, end_port)
@@ -432,12 +433,27 @@ local function zmq_dissect_frame(buffer, pinfo, frame_tree, tap, toplevel_tree)
                                 end
                         end
                 elseif body_len > 0 then
-                        frame_tree:add(fds.protocol, current_settings.protocol):set_generated()
+                   local protocol_ = current_settings.protocol
+                   if protocol_ ~= nil and protocol_ ~= "" then
+                      local protocol_dissector = subdissectors:get_dissector(protocol_)
+                      if not protocol_dissector then
+                         local dissector_ = Dissector.get(protocol_)
+                         if dissector_ then
+                            subdissectors:add(protocol_, dissector_)
+                         else
+                            protocol_ = "UNKNOWN"
+                         end
+                      end
+                   end
 
-                        subdissectors:try(current_settings.protocol, body_rang:tvb(), pinfo, toplevel_tree)
+                   if protocol_ == current_settings.protocol then
+                      dissect_internal = true
+                   end
 
+                   frame_tree:add(fds.protocol, protocol_):set_generated()
+                   subdissectors:try(protocol_, body_rang:tvb(), pinfo, toplevel_tree)
                         frame_tree:set_text(format("Data%s, Length: %u",
-                                            has_more, body_len, tostring(body_rang)))
+                                                   has_more, body_len, tostring(body_rang)))
                 else
                         frame_tree:set_text(format("Empty%s", has_more))
                 end
@@ -559,7 +575,12 @@ function zmtp_proto.dissector(tvb, pinfo, tree)
 
         -- Info column
         pinfo.cols.protocol = "ZMTP"
-        pinfo.cols.info = table.concat(desc, "; ")
+        if dissect_internal then
+           pinfo.cols.info = format(" | %s", table.concat(desc, "; "))
+           dissect_internal = false
+        else
+           pinfo.cols.info = table.concat(desc, "; ")
+        end
         --pinfo.tap_data = tap
 
         return
