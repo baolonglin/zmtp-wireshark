@@ -86,6 +86,7 @@ fds.cmd_ping_ttl = ProtoField.new("Time To Live (deciseconds)", "zmtp.command.pi
 fds.cmd_ping_context = ProtoField.new("Context", "zmtp.command.ping.context", ftypes.STRING)
 fds.cmd_pong = ProtoField.new("PONG Command", "zmtp.command.pong", ftypes.BYTES)
 fds.cmd_pong_context = ProtoField.new("Context", "zmtp.command.pong.context", ftypes.STRING)
+fds.cmd_tls_handshake = ProtoField.new("TLS Handshake Command", "zmtp.command.tls_handshake", ftypes.BYTES)
 
 local tcp_stream_id = Field.new("tcp.stream")
 local subdissectors = DissectorTable.new("zmtp.protocol", "ZMTP", ftypes.STRING)
@@ -143,6 +144,24 @@ function zmtp_proto.init(arg1, arg2)
 end
 
 local stream_mechanisms = {}
+
+local function zmq_dissect_data(data_rang, pinfo, frame_tree)
+   local protocol_ = current_settings.protocol
+   if protocol_ ~= nil and protocol_ ~= "" then
+      local protocol_dissector = subdissectors:get_dissector(protocol_)
+      if not protocol_dissector then
+         local dissector_ = Dissector.get(protocol_)
+         if dissector_ then
+            subdissectors:add(protocol_, dissector_)
+         else
+            protocol_ = "UNKNOWN"
+         end
+      end
+   end
+
+   subdissectors:try(protocol_, data_rang:tvb(), pinfo, frame_tree)
+   return protocol_
+end
 
 local function zmq_dissect_frame(buffer, pinfo, frame_tree, tap, toplevel_tree)
         local flags_rang = buffer(0, 1)
@@ -395,6 +414,14 @@ local function zmq_dissect_frame(buffer, pinfo, frame_tree, tap, toplevel_tree)
                                     frame_tree:set_text(format("Command PONG%s: Context: %s",
                                                     has_more, pong_context))
                         end
+                elseif cmd_name == "TLS_HANDSHAKE" then
+                   if cmd_data_rang:len() > 66 then
+                      local tls_handshake_tree = frame_tree:add(fds.cmd_tls_handshake, cmd_data_rang:range(66, cmd_data_rang:len()-66))
+                      frame_tree:set_text(format("Command TLS_HANDSHAKE: Version: %d.%d",
+                                                 cmd_data_rang:range(0, 1):uint(),
+                                                 cmd_data_rang:range(1, 1):uint()))
+                      zmq_dissect_data(cmd_data_rang:range(66, cmd_data_rang:len() - 66), pinfo, frame_tree)
+                   end
                 else
                         if cmd_data_rang then
                                 frame_tree:add(fds.cmd_unknown_data, cmd_data_rang)
@@ -433,25 +460,10 @@ local function zmq_dissect_frame(buffer, pinfo, frame_tree, tap, toplevel_tree)
                                 end
                         end
                 elseif body_len > 0 then
-                   local protocol_ = current_settings.protocol
-                   if protocol_ ~= nil and protocol_ ~= "" then
-                      local protocol_dissector = subdissectors:get_dissector(protocol_)
-                      if not protocol_dissector then
-                         local dissector_ = Dissector.get(protocol_)
-                         if dissector_ then
-                            subdissectors:add(protocol_, dissector_)
-                         else
-                            protocol_ = "UNKNOWN"
-                         end
-                      end
-                   end
-
+                   local protocol_ = zmq_dissect_data(body_rang, pinfo, frame_tree)
                    if protocol_ == current_settings.protocol then
                       dissect_internal = true
                    end
-
-                   frame_tree:add(fds.protocol, protocol_):set_generated()
-                   subdissectors:try(protocol_, body_rang:tvb(), pinfo, toplevel_tree)
                         frame_tree:set_text(format("Data%s, Length: %u",
                                                    has_more, body_len, tostring(body_rang)))
                 else
